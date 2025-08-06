@@ -5,20 +5,26 @@ from dateutil import parser
 
 app = Flask(__name__)
 
-# REPLACE these with your actual Tastytrade credentials
-USERNAME = 'ghbulla@gmail.com'
-PASSWORD = 'Hector0292!$'
+# --- REPLACE with your actual OAuth2 credentials ---
+CLIENT_ID = '784e2047-583f-4e47-8c41-283439346d07'
+CLIENT_SECRET = '3fc915eae7624dd2a46b276316e09e049ee25c79'
+REFRESH_TOKEN = 'eb3f57f5-00da-4502-b144-7545d43b5043'  # You got this when you authenticated
 
-# Authenticate and get session token
-def authenticate():
-    url = "https://api.tastytrade.com/sessions"
+# --- Get new access token using refresh token ---
+def get_access_token():
+    url = "https://api.tastytrade.com/oauth2/token"
     headers = {'Content-Type': 'application/json'}
-    payload = {'login': USERNAME, 'password': PASSWORD}
+    payload = {
+        "grant_type": "refresh_token",
+        "refresh_token": REFRESH_TOKEN,
+        "client_id": CLIENT_ID,
+        "client_secret": CLIENT_SECRET
+    }
     response = requests.post(url, json=payload, headers=headers)
     response.raise_for_status()
-    return response.json()['data']['session-token']
+    return response.json()['access_token']
 
-# Find expiration date closest to 21 DTE
+# --- Find expiration date closest to 21 DTE ---
 def get_closest_expiration(symbol, token):
     url = f"https://api.tastytrade.com/option-chains/{symbol}/expiration-and-strikes"
     headers = {'Authorization': f'Bearer {token}'}
@@ -34,7 +40,7 @@ def get_closest_expiration(symbol, token):
     )
     return closest_exp
 
-# Find option with delta closest to 0.30
+# --- Find PUT and CALL options closest to 0.30 delta ---
 def find_30_delta_options(symbol, expiration, token):
     url = f"https://api.tastytrade.com/option-chains/{symbol}/nested"
     headers = {'Authorization': f'Bearer {token}'}
@@ -73,14 +79,14 @@ def find_30_delta_options(symbol, expiration, token):
 
 @app.route('/')
 def home():
-    return '✅ Tastytrade Webhook is Running!'
+    return '✅ Tastytrade Webhook is Running with OAuth2!'
 
 @app.route('/fetch', methods=['POST'])
 def fetch_data():
     try:
         data = request.get_json()
         symbol = data.get('symbol')
-        token = authenticate()
+        token = get_access_token()
         expiration = get_closest_expiration(symbol, token)
         result = find_30_delta_options(symbol, expiration, token)
         return jsonify(result), 200
