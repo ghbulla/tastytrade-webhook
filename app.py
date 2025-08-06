@@ -1,31 +1,75 @@
 from flask import Flask, request, jsonify
 import requests
-import json
-import datetime
-import pytz
+from datetime import datetime
+from dateutil import parser
 
 app = Flask(__name__)
 
-# Global variable to store the session token
-session_token = None
+# REPLACE these with your actual Tastytrade credentials
+USERNAME = 'ghbulla@gmail.com'
+PASSWORD = 'Hector0292!$'
 
-# Function to log in to Tastytrade API
-def login_to_tastytrade():
-    global session_token
-    url = "https://api.tastyworks.com/sessions"
-    headers = {"Content-Type": "application/json"}
-    payload = {
-        "login": "ghbulla@gmail.com",     # <-- UPDATE THIS
-        "password": "Hector0292!$" # <-- UPDATE THIS
+# Authenticate and get session token
+def authenticate():
+    url = "https://api.tastytrade.com/sessions"
+    headers = {'Content-Type': 'application/json'}
+    payload = {'login': USERNAME, 'password': PASSWORD}
+    response = requests.post(url, json=payload, headers=headers)
+    response.raise_for_status()
+    return response.json()['data']['session-token']
+
+# Find expiration date closest to 21 DTE
+def get_closest_expiration(symbol, token):
+    url = f"https://api.tastytrade.com/option-chains/{symbol}/expiration-and-strikes"
+    headers = {'Authorization': f'Bearer {token}'}
+    response = requests.get(url, headers=headers)
+    response.raise_for_status()
+    expirations = response.json()['data']['expirations']
+    today = datetime.now()
+    target_dte = 21
+
+    closest_exp = min(
+        expirations,
+        key=lambda exp: abs((parser.parse(exp) - today).days - target_dte)
+    )
+    return closest_exp
+
+# Find option with delta closest to 0.30
+def find_30_delta_options(symbol, expiration, token):
+    url = f"https://api.tastytrade.com/option-chains/{symbol}/nested"
+    headers = {'Authorization': f'Bearer {token}'}
+    params = {'expiration-date': expiration, 'include-quotes': True}
+    response = requests.get(url, headers=headers, params=params)
+    response.raise_for_status()
+    options = response.json()['data']['items']
+
+    puts = []
+    calls = []
+    for strike_data in options:
+        for option in strike_data['options']:
+            if option['option_type'] == 'P' and option['greeks'] and option['greeks']['delta'] is not None:
+                puts.append(option)
+            elif option['option_type'] == 'C' and option['greeks'] and option['greeks']['delta'] is not None:
+                calls.append(option)
+
+    closest_put = min(puts, key=lambda x: abs(abs(x['greeks']['delta']) - 0.30))
+    closest_call = min(calls, key=lambda x: abs(abs(x['greeks']['delta']) - 0.30))
+
+    return {
+        "expiration": expiration,
+        "put": {
+            "strike": closest_put['strike-price'],
+            "bid": closest_put['bid-price'],
+            "ask": closest_put['ask-price'],
+            "delta": closest_put['greeks']['delta']
+        },
+        "call": {
+            "strike": closest_call['strike-price'],
+            "bid": closest_call['bid-price'],
+            "ask": closest_call['ask-price'],
+            "delta": closest_call['greeks']['delta']
+        }
     }
-
-    response = requests.post(url, headers=headers, json=payload)
-    if response.status_code == 201:
-        session_token = response.json()["data"]["session-token"]
-        return True
-    else:
-        print("Login failed:", response.text)
-        return False
 
 @app.route('/')
 def home():
@@ -33,80 +77,12 @@ def home():
 
 @app.route('/fetch', methods=['POST'])
 def fetch_data():
-    global session_token
-    data = request.get_json()
-    symbol = data.get("symbol")
-    if not symbol:
-        return jsonify({"error": "No symbol provided"}), 400
-
-    # Ensure we are logged in
-    if not session_token and not login_to_tastytrade():
-        return jsonify({"error": "Login to Tastytrade failed"}), 500
-
-    headers = {
-        "Authorization": f"Bearer {session_token}"
-    }
-
-    # Step 1: Get Expiration Dates
-    expiration_url = f"https://api.tastyworks.com/option-chains/{symbol}/expiration-and-strikes"
-    exp_response = requests.get(expiration_url, headers=headers)
-    if exp_response.status_code != 200:
-        return jsonify({"error": f"Failed to get expirations: {exp_response.text}"}), 500
-
-    expirations = exp_response.json().get("expirations", [])
-    if not expirations:
-        return jsonify({"error": "No expiration dates found"}), 404
-
-    # Step 2: Find expiration closest to 21 DTE
-    today = datetime.datetime.now(pytz.timezone("US/Eastern")).date()
-    closest_exp = min(expirations, key=lambda x: abs((datetime.datetime.strptime(x, "%Y-%m-%d").date() - today).days))
-
-    # Step 3: Get option chain
-    chain_url = f"https://api.tastyworks.com/option-chains/{symbol}/nested"
-    params = {
-        "expiration": closest_exp,
-        "includeStrategies": "true"
-    }
-
-    chain_response = requests.get(chain_url, headers=headers, params=params)
-    if chain_response.status_code != 200:
-        return jsonify({"error": f"Failed to get option chain: {chain_response.text}"}), 500
-
-    options = chain_response.json().get("data", {}).get("items", [])
-    if not options:
-        return jsonify({"error": "No options found"}), 404
-
-    # Step 4: Find ATM strike
-    underlying_price = float(chain_response.json().get("data", {}).get("underlying-price", 0))
-    closest_call = None
-    closest_put = None
-    min_call_diff = float('inf')
-    min_put_diff = float('inf')
-
-    for item in options:
-        option_type = item.get("instrument-type")
-        strike = float(item.get("strike-price"))
-        bid = item.get("bid")
-        ask = item.get("ask")
-
-        if None in (bid, ask):
-            continue
-
-        if option_type == "CALL":
-            diff = abs(strike - underlying_price)
-            if diff < min_call_diff:
-                min_call_diff = diff
-                closest_call = {"strike": strike, "bid": bid, "ask": ask}
-        elif option_type == "PUT":
-            diff = abs(strike - underlying_price)
-            if diff < min_put_diff:
-                min_put_diff = diff
-                closest_put = {"strike": strike, "bid": bid, "ask": ask}
-
-    return jsonify({
-        "symbol": symbol,
-        "underlying_price": underlying_price,
-        "expiration": closest_exp,
-        "call": closest_call,
-        "put": closest_put
-    }), 200
+    try:
+        data = request.get_json()
+        symbol = data.get('symbol')
+        token = authenticate()
+        expiration = get_closest_expiration(symbol, token)
+        result = find_30_delta_options(symbol, expiration, token)
+        return jsonify(result), 200
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
