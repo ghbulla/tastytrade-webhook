@@ -12,7 +12,7 @@ REFRESH_TOKEN = 'eb3f57f5-00da-4502-b144-7545d43b5043'  # You got this when you 
 
 # --- Get new access token using refresh token ---
 def get_access_token():
-    url = "https://api.tastytrade.com/oauth2/token"
+    url = "https://api.tastytrade.com/sessions/oauth2/token"
     headers = {'Content-Type': 'application/json'}
     payload = {
         "grant_type": "refresh_token",
