@@ -2,29 +2,108 @@ from flask import Flask, request, jsonify
 import requests
 from datetime import datetime
 from dateutil import parser
+import os
 
 app = Flask(__name__)
 
-# --- REPLACE with your actual OAuth2 credentials ---
-CLIENT_ID = '784e2047-583f-4e47-8c41-283439346d07'
-CLIENT_SECRET = '3fc915eae7624dd2a46b276316e09e049ee25c79'
-REFRESH_TOKEN = 'eb3f57f5-00da-4502-b144-7545d43b5043'  # You got this when you authenticated
+# Set these as environment variables in Render
+CLIENT_ID = os.environ.get('TT_CLIENT_ID')
+CLIENT_SECRET = os.environ.get('TT_CLIENT_SECRET')
+REDIRECT_URI = "https://tastytrade-webhook.onrender.com/callback"
 
-# --- Get new access token using refresh token ---
-def get_access_token():
-    url = "https://api.tastytrade.com/sessions/oauth/token"
-    headers = {'Content-Type': 'application/json'}
+# Store tokens in memory (reset on redeploy)
+tokens = {}
+
+def exchange_code_for_token(auth_code):
+    url = "https://api.tastytrade.com/oauth2/token"
+    headers = {
+        "Content-Type": "application/x-www-form-urlencoded"
+    }
+    payload = {
+        "grant_type": "authorization_code",
+        "code": auth_code,
+        "client_id": CLIENT_ID,
+        "client_secret": CLIENT_SECRET,
+        "redirect_uri": REDIRECT_URI
+    }
+    response = requests.post(url, data=payload, headers=headers)
+    response.raise_for_status()
+    return response.json()
+
+def refresh_access_token(refresh_token):
+    url = "https://api.tastytrade.com/oauth2/token"
+    headers = {
+        "Content-Type": "application/x-www-form-urlencoded"
+    }
     payload = {
         "grant_type": "refresh_token",
-        "refresh_token": REFRESH_TOKEN,
+        "refresh_token": refresh_token,
         "client_id": CLIENT_ID,
-        "client_secret": CLIENT_SECRET
+        "client_secret": CLIENT_SECRET,
+        "redirect_uri": REDIRECT_URI
     }
-    response = requests.post(url, json=payload, headers=headers)
+    response = requests.post(url, data=payload, headers=headers)
     response.raise_for_status()
-    return response.json()['access_token']
+    return response.json()
 
-# --- Find expiration date closest to 21 DTE ---
+def get_access_token():
+    if not tokens:
+        raise Exception("No token available. Go to /authorize first.")
+
+    # Try using existing token
+    try:
+        # Test call to see if it's valid
+        headers = {'Authorization': f'Bearer {tokens["access_token"]}'}
+        r = requests.get("https://api.tastytrade.com/accounts", headers=headers)
+        if r.status_code == 200:
+            return tokens["access_token"]
+    except:
+        pass
+
+    # Refresh token
+    refreshed = refresh_access_token(tokens["refresh_token"])
+    tokens["access_token"] = refreshed["access_token"]
+    tokens["refresh_token"] = refreshed["refresh_token"]
+    return tokens["access_token"]
+
+@app.route('/')
+def home():
+    return '✅ Tastytrade Webhook is Running!'
+
+@app.route('/authorize')
+def authorize_link():
+    auth_url = (
+        f"https://my.tastytrade.com/auth.html?"
+        f"response_type=code&client_id={CLIENT_ID}&redirect_uri={REDIRECT_URI}"
+    )
+    return f'👉 <a href="{auth_url}" target="_blank">Click here to authorize</a>'
+
+@app.route('/callback')
+def oauth_callback():
+    auth_code = request.args.get('code')
+    if not auth_code:
+        return "❌ Authorization code not found", 400
+
+    try:
+        token_data = exchange_code_for_token(auth_code)
+        tokens["access_token"] = token_data["access_token"]
+        tokens["refresh_token"] = token_data["refresh_token"]
+        return "✅ Tokens received and stored. You can now use /fetch"
+    except Exception as e:
+        return f"❌ Failed to get tokens: {str(e)}", 500
+
+@app.route('/fetch', methods=['POST'])
+def fetch_data():
+    try:
+        data = request.get_json()
+        symbol = data.get('symbol')
+        token = get_access_token()
+        expiration = get_closest_expiration(symbol, token)
+        result = find_30_delta_options(symbol, expiration, token)
+        return jsonify(result), 200
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
 def get_closest_expiration(symbol, token):
     url = f"https://api.tastytrade.com/option-chains/{symbol}/expiration-and-strikes"
     headers = {'Authorization': f'Bearer {token}'}
@@ -33,14 +112,12 @@ def get_closest_expiration(symbol, token):
     expirations = response.json()['data']['expirations']
     today = datetime.now()
     target_dte = 21
-
     closest_exp = min(
         expirations,
         key=lambda exp: abs((parser.parse(exp) - today).days - target_dte)
     )
     return closest_exp
 
-# --- Find PUT and CALL options closest to 0.30 delta ---
 def find_30_delta_options(symbol, expiration, token):
     url = f"https://api.tastytrade.com/option-chains/{symbol}/nested"
     headers = {'Authorization': f'Bearer {token}'}
@@ -76,19 +153,3 @@ def find_30_delta_options(symbol, expiration, token):
             "delta": closest_call['greeks']['delta']
         }
     }
-
-@app.route('/')
-def home():
-    return '✅ Tastytrade Webhook is Running with OAuth2!'
-
-@app.route('/fetch', methods=['POST'])
-def fetch_data():
-    try:
-        data = request.get_json()
-        symbol = data.get('symbol')
-        token = get_access_token()
-        expiration = get_closest_expiration(symbol, token)
-        result = find_30_delta_options(symbol, expiration, token)
-        return jsonify(result), 200
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
