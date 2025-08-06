@@ -15,7 +15,7 @@ REDIRECT_URI = "https://tastytrade-webhook.onrender.com/callback"
 tokens = {}
 
 def exchange_code_for_token(auth_code):
-    url = "https://api.tastytrade.com/oauth2/token"
+    url = "https://api.tastytrade.com/oauth/token"
     headers = {
         "Content-Type": "application/x-www-form-urlencoded"
     }
@@ -31,7 +31,7 @@ def exchange_code_for_token(auth_code):
     return response.json()
 
 def refresh_access_token(refresh_token):
-    url = "https://api.tastytrade.com/oauth2/token"
+    url = "https://api.tastytrade.com/oauth/token"
     headers = {
         "Content-Type": "application/x-www-form-urlencoded"
     }
