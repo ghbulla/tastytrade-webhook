@@ -216,6 +216,60 @@ def token_status():
     except Exception as e:
         return jsonify({"ok": False, "where": "token_status_exception", "details": str(e)}), 500
 
+@app.route('/debug/nested-sample', methods=['GET'])
+def nested_sample():
+    try:
+        symbol = request.args.get('symbol', 'AMAT')
+        token = get_valid_access_token()
+        # use the same expiration finder you already have
+        expiration = get_closest_expiration(symbol, token)
+
+        url = f"{BASE_URL}/option-chains/{symbol}/nested"
+        headers = {'Authorization': f'Bearer {token}'}
+        params = {'expiration-date': expiration, 'include-quotes': True}
+        r = SESSION.get(url, headers=headers, params=params)
+        _raise_for_status_with_context(r, "nested_chain_fetch_failed")
+
+        data = r.json().get('data', {})
+        items = data.get('items', [])
+
+        total_options = 0
+        with_greeks = 0
+        examples = []
+
+        for strike_data in items:
+            for opt in strike_data.get('options', []):
+                total_options += 1
+                q = opt.get('quote') or {}
+                greeks = q.get('greeks') or {}
+                delta = greeks.get('delta')
+                if delta is not None:
+                    with_greeks += 1
+                    # collect a few examples to see structure
+                    if len(examples) < 5:
+                        examples.append({
+                            "option_type": opt.get("option_type"),
+                            "strike": opt.get("strike-price"),
+                            "bid": q.get("bid"),
+                            "ask": q.get("ask"),
+                            "delta": delta
+                        })
+
+        return jsonify({
+            "symbol": symbol,
+            "expiration": expiration,
+            "items_count": len(items),
+            "total_options_seen": total_options,
+            "options_with_greeks": with_greeks,
+            "examples": examples[:5]
+        }), 200
+
+    except requests.HTTPError as e:
+        return jsonify({"error": "HTTPError", "details": str(e)}), 500
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
 @app.route('/fetch', methods=['POST'])
 def fetch_data():
     try:
