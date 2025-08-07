@@ -108,9 +108,9 @@ def get_valid_access_token():
     REFRESH_TOKEN = tokens.get("refresh_token") or REFRESH_TOKEN
     return ACCESS_TOKEN
 
-# ✅ GET closest expiration to 21 DTE
+# ✅ GET closest expiration to 21 DTE  — fixed endpoint
 def get_closest_expiration(symbol, token):
-    url = f"{BASE_URL}/option-chains/{symbol}/expiration-and-strikes"
+    url = f"{BASE_URL}/option-chains/{symbol}"   # was .../expiration-and-strikes (wrong)
     headers = {'Authorization': f'Bearer {token}'}
     response = SESSION.get(url, headers=headers)
     _raise_for_status_with_context(response, "expirations_fetch_failed")
