@@ -47,24 +47,19 @@ def refresh_access_token(refresh_token):
     return response.json()
 
 def get_access_token():
-    if not tokens:
-        raise Exception("No token available. Go to /authorize first.")
+    if not os.path.exists("tokens.json"):
+        raise Exception("Token file not found. Please visit /authorize to authenticate.")
 
-    # Try using existing token
-    try:
-        # Test call to see if it's valid
-        headers = {'Authorization': f'Bearer {tokens["access_token"]}'}
-        r = requests.get("https://api.tastytrade.com/accounts", headers=headers)
-        if r.status_code == 200:
-            return tokens["access_token"]
-    except:
-        pass
+    with open("tokens.json", "r") as f:
+        tokens = json.load(f)
 
-    # Refresh token
-    refreshed = refresh_access_token(tokens["refresh_token"])
-    tokens["access_token"] = refreshed["access_token"]
-    tokens["refresh_token"] = refreshed["refresh_token"]
-    return tokens["access_token"]
+    access_token = tokens.get("access_token")
+    refresh_token = tokens.get("refresh_token")
+
+    if not access_token or not refresh_token:
+        raise Exception("Access or refresh token missing. Please re-authenticate via /authorize.")
+
+    return access_token, refresh_token
 
 @app.route('/')
 def home():
