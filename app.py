@@ -292,6 +292,31 @@ def nested_sample():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
+@app.route('/debug/nested-raw', methods=['GET'])
+def nested_raw():
+    try:
+        symbol = request.args.get('symbol', 'AMAT')
+        token = get_valid_access_token()
+        exp = get_closest_expiration(symbol, token)
+
+        url = f"{BASE_URL}/option-chains/{symbol}/nested"
+        headers = {'Authorization': f'Bearer {token}'}
+        params = {'expiration-date': exp, 'include-quotes': True}
+        r = SESSION.get(url, headers=headers, params=params)
+        _raise_for_status_with_context(r, "nested_chain_fetch_failed")
+
+        return jsonify({
+            "symbol": symbol,
+            "expiration": exp,
+            "status_code": r.status_code,
+            "url": r.url,
+            "body_head": r.text[:2000]  # first 2000 chars only
+        }), 200
+    except requests.HTTPError as e:
+        return jsonify({"error": "HTTPError", "details": str(e)}), 500
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
 
 @app.route('/fetch', methods=['POST'])
 def fetch_data():
