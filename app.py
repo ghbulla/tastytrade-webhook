@@ -139,7 +139,7 @@ def get_closest_expiration(symbol, token):
     )
     return closest
 
-# ✅ Find options closest to 30 delta
+# ✅ Find options closest to 30 delta (read greeks from option.quote.greeks)
 def find_30_delta_options(symbol, expiration, token):
     url = f"{BASE_URL}/option-chains/{symbol}/nested"
     headers = {'Authorization': f'Bearer {token}'}
@@ -155,33 +155,40 @@ def find_30_delta_options(symbol, expiration, token):
     calls = []
     for strike_data in items:
         for option in strike_data.get('options', []):
-            greeks = option.get('greeks')
-            if not greeks or greeks.get('delta') is None:
+            q = option.get('quote') or {}
+            greeks = q.get('greeks') or {}
+            delta = greeks.get('delta')
+            if delta is None:
                 continue
-            if option.get('option_type') == 'P':
-                puts.append(option)
-            elif option.get('option_type') == 'C':
-                calls.append(option)
+
+            opt_type = option.get('option_type')  # 'P' or 'C'
+            if opt_type == 'P':
+                puts.append((option, q, delta))
+            elif opt_type == 'C':
+                calls.append((option, q, delta))
 
     if not puts or not calls:
         raise Exception(f"Insufficient options with greeks for {symbol} @ {expiration}")
 
-    closest_put = min(puts, key=lambda x: abs(abs(x['greeks']['delta']) - 0.30))
-    closest_call = min(calls, key=lambda x: abs(abs(x['greeks']['delta']) - 0.30))
+    closest_put = min(puts, key=lambda x: abs(abs(x[2]) - 0.30))
+    closest_call = min(calls, key=lambda x: abs(abs(x[2]) - 0.30))
+
+    put_opt, put_q, _ = closest_put
+    call_opt, call_q, _ = closest_call
 
     return {
         "expiration": expiration,
         "put": {
-            "strike": closest_put.get('strike-price'),
-            "bid": closest_put.get('bid-price'),
-            "ask": closest_put.get('ask-price'),
-            "delta": closest_put['greeks'].get('delta')
+            "strike": put_opt.get('strike-price'),
+            "bid": put_q.get('bid'),
+            "ask": put_q.get('ask'),
+            "delta": (put_q.get('greeks') or {}).get('delta')
         },
         "call": {
-            "strike": closest_call.get('strike-price'),
-            "bid": closest_call.get('bid-price'),
-            "ask": closest_call.get('ask-price'),
-            "delta": closest_call['greeks'].get('delta')
+            "strike": call_opt.get('strike-price'),
+            "bid": call_q.get('bid'),
+            "ask": call_q.get('ask'),
+            "delta": (call_q.get('greeks') or {}).get('delta')
         }
     }
 
