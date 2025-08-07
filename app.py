@@ -16,15 +16,26 @@ REFRESH_TOKEN = os.getenv("TT_REFRESH_TOKEN")
 # OAuth2 redirect URI (unchanged)
 REDIRECT_URI = "https://tastytrade-webhook.onrender.com/authorize/callback"
 
+# ---- API base + token endpoints (tastyworks per docs) ----
+BASE_URL = "https://api.tastyworks.com"
+TOKEN_URL = f"{BASE_URL}/oauth/token"
+
 # ---- Requests session with required headers ----
 SESSION = requests.Session()
 SESSION.headers.update({
-    "User-Agent": "wheelwatchlist/1.0",   # required by Tastytrade/Tastyworks
+    "User-Agent": "wheelwatchlist/1.0",   # required
     "Accept": "application/json"
 })
 
-# ---- Token endpoint (fixed host + path) ----
-TOKEN_URL = "https://api.tastyworks.com/oauth/token"
+def _raise_for_status_with_context(resp, context):
+    try:
+        resp.raise_for_status()
+    except requests.HTTPError as e:
+        # Surface URL, status, and text for easier debugging
+        raise requests.HTTPError(
+            f"{context} | url={resp.request.method} {resp.url} | "
+            f"status={resp.status_code} | body={resp.text}"
+        )
 
 # 🔐 Step 1: Redirect user to Tastytrade auth
 @app.route("/authorize")
@@ -55,8 +66,7 @@ def callback():
             "redirect_uri": REDIRECT_URI
         }
         r = SESSION.post(TOKEN_URL, data=data)
-        if r.status_code != 200:
-            return jsonify({"error": "Failed to get tokens", "details": r.text}), 500
+        _raise_for_status_with_context(r, "token_exchange_failed")
 
         tokens = r.json()
         return jsonify({
@@ -64,6 +74,8 @@ def callback():
             "access_token": tokens.get('access_token'),
             "refresh_token": tokens.get('refresh_token')
         }), 200
+    except requests.HTTPError as e:
+        return jsonify({"error": "Failed to get tokens", "details": str(e)}), 500
     except Exception as e:
         return jsonify({"error": "Exception during token exchange", "details": str(e)}), 500
 
@@ -74,36 +86,34 @@ def get_valid_access_token():
     # If we have an access token, test it
     if ACCESS_TOKEN:
         test = SESSION.get(
-            "https://api.tastyworks.com/customers/me/accounts",
+            f"{BASE_URL}/customers/me/accounts",
             headers={"Authorization": f"Bearer {ACCESS_TOKEN}"}
         )
         if test.status_code == 200:
             return ACCESS_TOKEN
-        # fall through to refresh
+        # else fall through to refresh
 
-    # Refresh with refresh token
+    # Refresh with refresh token (per docs)
     data = {
         "grant_type": "refresh_token",
         "refresh_token": REFRESH_TOKEN,
-        "client_id": CLIENT_ID,
         "client_secret": CLIENT_SECRET,
+        # docs only require client_secret for refresh; leaving out client_id
     }
     r = SESSION.post(TOKEN_URL, data=data)
-    if r.status_code != 200:
-        raise Exception("Failed to refresh access token: " + r.text)
+    _raise_for_status_with_context(r, "token_refresh_failed")
 
     tokens = r.json()
     ACCESS_TOKEN = tokens.get("access_token")
     REFRESH_TOKEN = tokens.get("refresh_token") or REFRESH_TOKEN
-
     return ACCESS_TOKEN
 
 # ✅ GET closest expiration to 21 DTE
 def get_closest_expiration(symbol, token):
-    url = f"https://api.tastyworks.com/option-chains/{symbol}/expiration-and-strikes"
+    url = f"{BASE_URL}/option-chains/{symbol}/expiration-and-strikes"
     headers = {'Authorization': f'Bearer {token}'}
     response = SESSION.get(url, headers=headers)
-    response.raise_for_status()
+    _raise_for_status_with_context(response, "expirations_fetch_failed")
 
     payload = response.json()
     expirations = payload.get('data', {}).get('expirations', [])
@@ -112,16 +122,19 @@ def get_closest_expiration(symbol, token):
 
     today = datetime.now()
     target_dte = 21
-    closest = min(expirations, key=lambda exp: abs((parser.parse(exp) - today).days - target_dte))
+    closest = min(
+        expirations,
+        key=lambda exp: abs((parser.parse(exp) - today).days - target_dte)
+    )
     return closest
 
 # ✅ Find options closest to 30 delta
 def find_30_delta_options(symbol, expiration, token):
-    url = f"https://api.tastyworks.com/option-chains/{symbol}/nested"
+    url = f"{BASE_URL}/option-chains/{symbol}/nested"
     headers = {'Authorization': f'Bearer {token}'}
     params = {'expiration-date': expiration, 'include-quotes': True}
     response = SESSION.get(url, headers=headers, params=params)
-    response.raise_for_status()
+    _raise_for_status_with_context(response, "nested_chain_fetch_failed")
 
     items = response.json().get('data', {}).get('items', [])
     if not items:
@@ -165,6 +178,26 @@ def find_30_delta_options(symbol, expiration, token):
 def home():
     return '✅ Tastytrade Webhook is Running!'
 
+# 🔎 New: quick token validity & refresh probe
+@app.route('/debug/token-status', methods=['GET'])
+def token_status():
+    try:
+        token = get_valid_access_token()
+        probe = SESSION.get(
+            f"{BASE_URL}/customers/me/accounts",
+            headers={"Authorization": f"Bearer {token}"}
+        )
+        return jsonify({
+            "ok": probe.status_code == 200,
+            "status_code": probe.status_code,
+            "url": f"{BASE_URL}/customers/me/accounts",
+            "body": probe.text[:500]
+        }), 200
+    except requests.HTTPError as e:
+        return jsonify({"ok": False, "where": "token_status_http_error", "details": str(e)}), 500
+    except Exception as e:
+        return jsonify({"ok": False, "where": "token_status_exception", "details": str(e)}), 500
+
 @app.route('/fetch', methods=['POST'])
 def fetch_data():
     try:
@@ -173,14 +206,25 @@ def fetch_data():
         if not symbol:
             return jsonify({"error": "Missing symbol"}), 400
 
+        # Step 1: token
         token = get_valid_access_token()
-        expiration = get_closest_expiration(symbol, token)
-        result = find_30_delta_options(symbol, expiration, token)
-        return jsonify(result), 200
-    except requests.HTTPError as http_err:
+
+        # Step 2: expiration
         try:
-            return jsonify({"error": "HTTPError", "details": http_err.response.text}), 500
-        except Exception:
-            return jsonify({"error": "HTTPError", "details": str(http_err)}), 500
+            expiration = get_closest_expiration(symbol, token)
+        except requests.HTTPError as e:
+            return jsonify({"error": "expirations_fetch_failed", "details": str(e)}), 500
+
+        # Step 3: nested chain (30Δ legs)
+        try:
+            result = find_30_delta_options(symbol, expiration, token)
+        except requests.HTTPError as e:
+            return jsonify({"error": "nested_chain_fetch_failed", "details": str(e)}), 500
+
+        return jsonify(result), 200
+
+    except requests.HTTPError as http_err:
+        # Catch-all for anything not explicitly wrapped above
+        return jsonify({"error": "HTTPError", "details": str(http_err)}), 500
     except Exception as e:
         return jsonify({"error": str(e)}), 500
