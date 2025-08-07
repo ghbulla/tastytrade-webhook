@@ -20,7 +20,7 @@ REDIRECT_URI = "https://tastytrade-webhook.onrender.com/authorize/callback"
 @app.route("/authorize")
 def authorize():
     auth_url = (
-        "https://my.tastytrade.com/auth/authorize?"
+        "https://my.tastytrade.com/auth.html?"
         + urlencode({
             "client_id": CLIENT_ID,
             "redirect_uri": REDIRECT_URI,
@@ -29,6 +29,7 @@ def authorize():
         })
     )
     return redirect(auth_url)
+
 
 # 🔐 Step 2: Callback to exchange code for tokens
 @app.route("/authorize/callback")
