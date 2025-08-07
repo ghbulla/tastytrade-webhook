@@ -19,14 +19,14 @@ REDIRECT_URI = "https://tastytrade-webhook.onrender.com/authorize/callback"
 # ---- Requests session with required headers ----
 SESSION = requests.Session()
 SESSION.headers.update({
-    "User-Agent": "wheelwatchlist/1.0",   # required by Tastytrade
+    "User-Agent": "wheelwatchlist/1.0",   # required by Tastytrade/Tastyworks
     "Accept": "application/json"
 })
 
-# ---- Token endpoint (fixed path: /oauth/token) ----
-TOKEN_URL = "https://api.tastytrade.com/oauth/token"
+# ---- Token endpoint (fixed host + path) ----
+TOKEN_URL = "https://api.tastyworks.com/oauth/token"
 
-# 🔐 Step 1: Redirect user to Tastytrade auth (unchanged route & query params)
+# 🔐 Step 1: Redirect user to Tastytrade auth
 @app.route("/authorize")
 def authorize():
     auth_url = (
@@ -40,7 +40,7 @@ def authorize():
     )
     return redirect(auth_url)
 
-# 🔐 Step 2: Callback to exchange code for tokens (uses SESSION + fixed TOKEN_URL)
+# 🔐 Step 2: Callback to exchange code for tokens
 @app.route("/authorize/callback")
 def callback():
     code = request.args.get("code")
@@ -67,14 +67,14 @@ def callback():
     except Exception as e:
         return jsonify({"error": "Exception during token exchange", "details": str(e)}), 500
 
-# ✅ Automatically refresh token if expired (fixed URL + headers + correct probe endpoint)
+# ✅ Automatically refresh token if expired
 def get_valid_access_token():
     global ACCESS_TOKEN, REFRESH_TOKEN
 
     # If we have an access token, test it
     if ACCESS_TOKEN:
         test = SESSION.get(
-            "https://api.tastytrade.com/customers/me/accounts",
+            "https://api.tastyworks.com/customers/me/accounts",
             headers={"Authorization": f"Bearer {ACCESS_TOKEN}"}
         )
         if test.status_code == 200:
@@ -94,15 +94,13 @@ def get_valid_access_token():
 
     tokens = r.json()
     ACCESS_TOKEN = tokens.get("access_token")
-    REFRESH_TOKEN = tokens.get("refresh_token") or REFRESH_TOKEN  # some providers omit new RT
+    REFRESH_TOKEN = tokens.get("refresh_token") or REFRESH_TOKEN
 
-    # Note: ACCESS_TOKEN/REFRESH_TOKEN are updated in memory for this instance.
-    # If you want persistence across restarts, manually update Render ENV with the values above.
     return ACCESS_TOKEN
 
-# ✅ GET closest expiration to 21 DTE (unchanged logic; now uses SESSION)
+# ✅ GET closest expiration to 21 DTE
 def get_closest_expiration(symbol, token):
-    url = f"https://api.tastytrade.com/option-chains/{symbol}/expiration-and-strikes"
+    url = f"https://api.tastyworks.com/option-chains/{symbol}/expiration-and-strikes"
     headers = {'Authorization': f'Bearer {token}'}
     response = SESSION.get(url, headers=headers)
     response.raise_for_status()
@@ -117,9 +115,9 @@ def get_closest_expiration(symbol, token):
     closest = min(expirations, key=lambda exp: abs((parser.parse(exp) - today).days - target_dte))
     return closest
 
-# ✅ Find options closest to 30 delta (unchanged logic; now uses SESSION)
+# ✅ Find options closest to 30 delta
 def find_30_delta_options(symbol, expiration, token):
-    url = f"https://api.tastytrade.com/option-chains/{symbol}/nested"
+    url = f"https://api.tastyworks.com/option-chains/{symbol}/nested"
     headers = {'Authorization': f'Bearer {token}'}
     params = {'expiration-date': expiration, 'include-quotes': True}
     response = SESSION.get(url, headers=headers, params=params)
