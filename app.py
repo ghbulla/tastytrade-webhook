@@ -108,15 +108,26 @@ def get_valid_access_token():
     REFRESH_TOKEN = tokens.get("refresh_token") or REFRESH_TOKEN
     return ACCESS_TOKEN
 
-# ✅ GET closest expiration to 21 DTE  — fixed endpoint
+# ✅ GET closest expiration to 21 DTE — use /option-chains/{symbol}/nested
 def get_closest_expiration(symbol, token):
-    url = f"{BASE_URL}/option-chains/{symbol}"   # was .../expiration-and-strikes (wrong)
+    url = f"{BASE_URL}/option-chains/{symbol}/nested"
     headers = {'Authorization': f'Bearer {token}'}
     response = SESSION.get(url, headers=headers)
     _raise_for_status_with_context(response, "expirations_fetch_failed")
 
     payload = response.json()
-    expirations = payload.get('data', {}).get('expirations', [])
+    items = payload.get('data', {}).get('items', [])
+    if not items:
+        raise Exception(f"No option chain items found for {symbol}")
+
+    # Docs: nested returns items[] each with expirations[] objects containing "expiration-date"
+    # https://developer.tastytrade.com/api-guides/instruments/  → “List Nested Option Chains”
+    expirations = []
+    for chain in items:
+        for exp in chain.get('expirations', []):
+            if exp.get('expiration-date'):
+                expirations.append(exp.get('expiration-date'))
+
     if not expirations:
         raise Exception(f"No expirations found for {symbol}")
 
