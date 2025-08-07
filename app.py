@@ -99,6 +99,16 @@ def fetch_data():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
+@app.route('/delete-tokens', methods=['GET'])
+def delete_tokens():
+    try:
+        os.remove('tokens.json')
+        return jsonify({"message": "✅ tokens.json deleted."}), 200
+    except FileNotFoundError:
+        return jsonify({"message": "⚠️ tokens.json not found."}), 404
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
 def get_closest_expiration(symbol, token):
     url = f"https://api.tastytrade.com/option-chains/{symbol}/expiration-and-strikes"
     headers = {'Authorization': f'Bearer {token}'}
