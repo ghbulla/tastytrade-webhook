@@ -108,36 +108,59 @@ def get_valid_access_token():
     REFRESH_TOKEN = tokens.get("refresh_token") or REFRESH_TOKEN
     return ACCESS_TOKEN
 
-# ✅ GET closest expiration to 21 DTE — use /option-chains/{symbol}/nested
+# ✅ Pick closest expiration to 21 DTE that actually has options (probes a few dates)
 def get_closest_expiration(symbol, token):
+    # 1) Get all expirations from nested (same as before)
     url = f"{BASE_URL}/option-chains/{symbol}/nested"
     headers = {'Authorization': f'Bearer {token}'}
-    response = SESSION.get(url, headers=headers)
-    _raise_for_status_with_context(response, "expirations_fetch_failed")
+    r = SESSION.get(url, headers=headers)
+    _raise_for_status_with_context(r, "expirations_fetch_failed")
 
-    payload = response.json()
-    items = payload.get('data', {}).get('items', [])
+    data = r.json().get('data', {})
+    items = data.get('items', [])
     if not items:
         raise Exception(f"No option chain items found for {symbol}")
 
-    # Docs: nested returns items[] each with expirations[] objects containing "expiration-date"
-    # https://developer.tastytrade.com/api-guides/instruments/  → “List Nested Option Chains”
+    # collect all expiration dates in list form
     expirations = []
     for chain in items:
         for exp in chain.get('expirations', []):
-            if exp.get('expiration-date'):
-                expirations.append(exp.get('expiration-date'))
+            d = exp.get('expiration-date')
+            if d:
+                expirations.append(d)
 
     if not expirations:
         raise Exception(f"No expirations found for {symbol}")
 
+    # 2) Sort by proximity to 21 DTE
+    from datetime import datetime
+    from dateutil import parser as _parser
     today = datetime.now()
     target_dte = 21
-    closest = min(
-        expirations,
-        key=lambda exp: abs((parser.parse(exp) - today).days - target_dte)
+
+    expirations_sorted = sorted(
+        set(expirations),
+        key=lambda d: abs((_parser.parse(d) - today).days - target_dte)
     )
-    return closest
+
+    # 3) Probe each candidate (closest first) until one returns options
+    for exp in expirations_sorted[:6]:  # check a few closest to keep it quick
+        url_nested = f"{BASE_URL}/option-chains/{symbol}/nested"
+        params = {'expiration-date': exp, 'include-quotes': True}
+        r2 = SESSION.get(url_nested, headers=headers, params=params)
+        _raise_for_status_with_context(r2, "nested_probe_failed")
+
+        items2 = r2.json().get('data', {}).get('items', [])
+        total_opts = 0
+        for row in items2:
+            total_opts += len(row.get('options', []))
+
+        if total_opts > 0:
+            return exp
+
+    # If none of the closest few had options, just fall back to the very first available
+    return expirations_sorted[0]
+
 
 # ✅ Find options closest to 30 delta (read greeks from option.quote.greeks)
 def find_30_delta_options(symbol, expiration, token):
