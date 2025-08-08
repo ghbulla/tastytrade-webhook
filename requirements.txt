@@ -2,3 +2,4 @@ flask
 gunicorn
 requests
 python-dateutil
+websocket-client>=1.8.0
